@@ -1,0 +1,128 @@
+Architectural Formalization of the Droot-Puna Security Model: CETI Pipeline Integration and Post-Quantum Hardened Transport Protocols
+
+The evolution of mobile computing has reached a critical juncture where the physical ownership of hardware no longer corresponds to administrative sovereignty over the operating system. In the prevailing paradigm of unrooted mobile environments, the user is restricted from performing low-level system administration, a limitation that fundamentally constrains the deployment of high-assurance, industrial-grade computing workflows. The Droot/Puna security architecture emerges as a rigorous response to this restriction, proposing a framework for Cryptographically Enforced, Transient Isolation (CETI) that elevates the unrooted host (\mathcal{H}_{\text{Constrained}}) into a secure execution platform. This report formalizes the dual-layer approach of this architecture, distinguishing the Droot orchestrator’s privileged orchestration from Puna’s amnesiac execution model, and culminates in a scientific analysis of eBPF-based mitigations for the persistent vulnerabilities inherent in the Android Debug Bridge (ADB) stack.
+The Philosophical Core: Sovereignty in Constrained Environments
+The philosophical foundation of the Droot-Puna project is rooted in the principle that user ownership must imply the right to administer resources. Standard mobile operating systems implement a sandbox model that isolates applications from one another but leaves the user dependent on the vendor’s Trusted Computing Base (TCB). For high-risk users—such as investigative journalists and researchers operating in hostile jurisdictions—this dependency is an unacceptable risk vector, as it exposes sensitive data to potential vendor backdoors, OS-level malware, and future decryption via quantum computing.
+The Droot-Puna architecture solves this isolation problem by introducing a secondary computing layer. By utilizing notarized requests for kernel compartmentalization, the framework allows for the transformation of large-system workflows into dynamic sets that integrate seamlessly with portable computing. This architecture is not merely a technical workaround but a formal security model that introduces a working paradigm unheard of until the first half of the 21st century, effectively unleashing the creative force of developers and users who require high-performance, isolated environments on standard consumer hardware.
+The Droot Orchestrator Security Model: Privileged API Integration
+The Droot orchestrator (\mathcal{A}_{\text{Droot}}) serves as the primary lifecycle manager and policy engine for the architecture. It is designed as a Rust-based library that wraps Proot, providing a more secure and efficient method for establishing isolated userspaces than traditional ptrace-based implementations. The security of Droot is predicated on its ability to leverage privileged APIs to request kernel-enforced boundaries.
+Privileged API Mechanisms: Shizuku vs. Enterprise System Certificates
+Droot integrates with the host operating system through two primary privileged channels: Shizuku and enterprise-level system certificates. These channels provide the necessary authorization for Droot to perform operations typically reserved for the root user, such as Namespace creation and Seccomp compartmentalization.
+Shizuku acts as a proxy between normal applications and Android’s privileged APIs. It functions by establishing a background Java process started via app_process, which inherits the privileges of the shell (UID 2000) or root (UID 0). When the Droot orchestrator initializes, it acquires a Binder from the Shizuku service, allowing it to execute system calls and management routines without the latency and unreliability associated with spawning multiple shell processes through su. This Binder-based transaction flow is significantly faster and more secure, as it hooks into the system directly and avoids the overhead of process creation and text parsing.
+Shizuku Privilege Level
+	Linux UID
+	Capabilities
+	Security Context
+	ADB Mode
+	2000 (shell)
+	Shell permissions
+	u:r:shell:s0
+	Root Mode
+	0 (root)
+	Unrestricted
+	u:r:su:s0
+The alternative mechanism, primarily suited for production and corporate environments, utilizes enterprise-level system certificates and the Device Owner mode. Device Owner is an Android Enterprise feature that provides total, system-level control over the device lifecycle. Unlike Shizuku, which must be manually restarted on boot in non-rooted environments, a DPC (Device Policy Controller) app provisioned as Device Owner can maintain persistent, notarized control over kernel features. This mode allows Droot to make formal requests for Seccomp-BPF policy loading and namespace isolation that are granted automatically by the SystemConfig service during the boot sequence.
+Trust via Code Safety: The Rust Implementation
+The orchestrator is constructed using Rust to ensure "Trust via Code Safety". By leveraging Rust’s ownership and borrowing model, Droot eliminates entire classes of memory corruption vulnerabilities that historically plague system-level utilities written in C or C++. This is a critical architectural requirement, as the orchestrator must process potentially hostile inputs (\mathcal{I}_{\text{H}}) and manage the physical memory allocated to the isolated environment.
+The Droot implementation includes a hard_seal function that hardens the environment by wiping environment variables, blocking signals, and resetting the umask to 0o077. This ensures that the orchestration process begins from a known, clean state, mitigating the risk of environment-based attacks. Furthermore, the orchestrator utilizes embedded Cargo for on-device builds, allowing it to compile and test arbitrary crates in a fenced environment with cgroup limits to enforce memory isolation.
+Policy Safety: Seccomp-BPF Syscall Filtering
+The core security boundary established by Droot is a kernel-enforced Seccomp-BPF filter (\mathcal{S}_{\text{Seccomp}}). Seccomp (Secure Computing Mode) restricts the system calls a process is permitted to make, thereby minimizing the attack surface presented to the kernel. Droot applies a rigorous whitelist (\mathcal{W}) to the isolation environment, which is mathematically defined as:
+By explicitly excluding execve, socket, and fork, Droot ensures that a process running within the isolated environment cannot execute child processes, establish network connections, or duplicate itself to evade monitoring. This transformation of the process security boundary is fundamental to the CETI principle, as it creates a sandbox that is enforced by the kernel rather than by userspace contracts.
+The Puna Execution Model: Amnesiac and Ephemeral Architecture
+While Droot provides the orchestration and policy enforcement, Puna (\mathcal{E}_{\text{Puna}}) represents the execution environment itself. The Puna model is characterized as an amnesiac, ephemeral, and quantum-protected userspace based on Alpine Linux.
+Tmpfs-Based Isolation and Memory Hygiene
+A mandatory architectural constraint of Puna is that the execution environment resides entirely within tmpfs, a temporary in-memory filesystem. This ensures that all data processed or generated during a session—including cryptographic material and intermediate text buffers—is stored only in physical RAM. This "data from hardware to a 0 (zeroization)" core is essential for constructing forward secrecy, as it guarantees that no data persists on the device's physical storage after the session terminates.
+The amnesiac property of Puna is further strengthened by rigorous memory hygiene. The architecture utilizes the VolatilePage primitive to interact directly with the operating system kernel to control the physical location and lifetime of sensitive data.
+Secure Memory Stage
+	Operation
+	Purpose
+	Allocation (A_{alloc})
+	libc::mmap with MAP_ANON
+	Isolates memory from other threads/processes
+	Initialization (A_{init})
+	ptr::write_bytes zeroization
+	Prevents use of uninitialized memory
+	Locking (A_{lock})
+	libc::mlock
+	Prevents OS from writing secrets to disk swap
+	Protection
+	RLIMIT_CORE = 0
+	Disables core dumps to prevent disk writes upon failure
+	To prevent accidental key exposure through memory pointers or copies, Puna implements a closure-based accessor pattern. Access to raw cryptographic secrets is strictly mediated: the reference to the sensitive memory slice exists only within the controlled lifetime of a supplied closure function. Upon the closure's completion, the reference immediately falls out of scope, eliminating the possibility of a persistent reference escaping control and causing inadvertent key duplication on the heap.
+The "Nuke" Phase: Transience and Destruction
+The lifecycle of a Puna session concludes with a structured destruction sequence known as "The Nuke". This phase is designed to guarantee zero persistence and maintain the integrity of the amnesiac architecture. Upon task completion or system failure, the environment triggers an immediate purge.
+Early versions of the architecture utilized a "panic" to initiate a purge; however, subsequent analysis identified that a system panic could potentially bypass essential Drop implementations and memory cleanup routines. The current "Mark 2" approach utilizes a controlled destruction sequence that ensures zeroization precedes resource release.
+Destruction Sequence (Algorithm \text{ VolatilePageDrop}):
+1. Zeroization (D_{zero}): The memory region is actively overwritten using the Zeroize trait, ensuring physical RAM is irrecoverable.
+2. Unlocking (D_{unlock}): The libc::munlock() system call releases the memory lock, confirming that the pages are no longer pinned in RAM.
+3. Deallocation (D_{unmap}): The libc::munmap() call returns the pages to the operating system.
+This sequence ensures atomic destruction: the zeroization is confirmed while the memory is still under the process's control, preventing forensic recovery from residual RAM contents.
+The CETI Pipeline: Cryptographically Enforced, Transient Isolation
+The Droot and Puna components are synthesized into the CETI pipeline, a multi-stage process that transforms hostile input into secure, verified output. The pipeline is governed by a forward-only state machine, ensuring that isolation and policy enforcement cannot be bypassed.
+Multi-Dimensional Contextual Authentication (\mathcal{C})
+Initialization of the CETI pipeline requires the satisfaction of the authentication requirement \mathcal{R}_{\text{Auth}}(\mathcal{C}). This authentication is based on proof of knowledge of an ephemeral private key and a contextual challenge.
+1. Key Generation: The Droot orchestrator generates a session key pair (pk_{\text{sess}}, sk_{\text{sess}}) using the JKPQ Kyber KEM library.
+2. Contextual Challenge: A nonce N_{\text{task}} is generated specific to the security-critical task \mathcal{T}_{\text{Task}}.
+3. Condition: The session proceeds only if the user provides a response proving knowledge of sk_{\text{sess}} and the current task nonce N.
+This ensures that even a compromised host or a remote adversary in possession of an SSH session cannot validate the start of a Puna environment without the unique, ephemeral private key, providing a layer of protection beyond standard personal computers.
+The Secure Processing Function (\Phi)
+The transformation \Phi follows a three-stage pipeline designed for isolation and egress security.
+Stage 1: Isolation and Policy Enforcement If \mathcal{R}_{\text{Auth}} is valid, Droot orchestrates the kernel request for Namespace and Seccomp creation. This stage provisions the temporary file system and applies the minimal BPF filter to the new Puna process.
+Stage 2: Processing and Encapsulation The hostile input (\mathcal{I}_{\text{H}}) is ingested into the confined Puna space. A Rust-based parser transforms the hostile input into clean output text (\mathcal{T}_{\text{Text}}). This output is immediately secured for transfer to a trusted Rust web client using a symmetric key (K_{\text{sym}}) generated during the Kyber exchange. The encapsulation prevents data egress to any entity other than the authorized client.
+Stage 3: Transience and Destruction Upon completion, "The Nuke" triggers the zeroization and destruction sequence described previously, ensuring the amnesiac nature of the transaction is maintained.
+Post-Quantum Authenticated Encrypted Transport (PQC-AET)
+Integrated within the CETI pipeline is the PQC-Hardened Authenticated Encrypted Transport Protocol (PQC-AET), which provides perpetual confidentiality and integrity. This protocol is designed for high-risk users in environments where network infrastructure and client devices are routinely targeted.
+Post-Quantum Key Encapsulation: Kyber1024
+The protocol mandates the use of Kyber1024 to mitigate the "fetch now-decrypt later" threat model, where adversaries harvest encrypted data to be decrypted by future quantum computers. Kyber1024 provides efficient asymmetric key agreement, yielding a high-entropy Shared Secret (SS) that forms the basis for all session-specific transport keys. The implementation utilizes ephemeral key pairs to ensure Perfect Forward Secrecy (PFS), guaranteeing that a future compromise of long-term credentials does not affect past session confidentiality.
+Key Derivation and Context Binding
+The Shared Secret derived from Kyber is processed through HKDF-SHA256 to transformation into a Pseudo-Random Key (PRK) and subsequently expanded into orthogonal transport keys. The HKDF-Expand stage utilizes a context-specific Info string to ensure domain separation and context binding :
+The 88-byte Output Key Material (OKM) is split into three orthogonal domains to prevent cryptographic overlap :
+Key Identifier
+	Length
+	Usage
+	K_{enc}
+	32 Bytes
+	Primary XChaCha20 symmetric key
+	K_{nonce}
+	24 Bytes
+	Input prefix for directional nonce generation
+	K_{mac}
+	32 Bytes
+	HMAC key for the Key Confirmation Sub-Protocol
+	The inclusion of the Session ID (ID_{Sess}) and the directional Role in the Info string guarantees that even if the same public key is used across multiple sessions, the resulting OKM is entirely distinct, preventing replay or directional key reuse attacks.
+Transport Layer: XChaCha20-Poly1305 and Nonce Management
+The transport layer utilizes XChaCha20-Poly1305, an authenticated encryption scheme selected for its robust nonce management. XChaCha20 provides a 24-byte nonce, which drastically reduces the probability of nonce collision in high-volume, multi-session streaming environments compared to the standard 12-byte nonce of ChaCha20.
+PQC-AET enforces a strict nonce policy utilizing directional sequence counters (Seq_{send} and Seq_{recv}). The final unique 24-byte nonce N is generated by XORing the current directional counter into the last 8 bytes of the K_{nonce} base :
+All counter increments must use checked_add; if saturation is reached (2^{64}-1), the protocol forces immediate session termination and key zeroization to prevent key reuse.
+Key Confirmation and Atomic Abort
+Following derivation, the Key Confirmation Message (KCM) is mandatory to ensure both endpoints have established identical transport key sets. The KCM is computed using HMAC-SHA256 over a context string and a hash of the entire handshake transcript (T_{transcript}) :
+The transcripts include public keys and exchanged ciphertext. If verification fails, indicating a discrepancy in the Shared Secret or derivation context, the session transition to an error state and triggers an atomic termination and destruction of all key material via the Drop routines.
+Scientific Appendix: Mitigating ADB Socket Exploits using eBPF and Seccomp-BPF
+A critical vulnerability in unrooted Android environments is the potential for privilege leakage through the Android Debug Bridge (ADB) daemon. ADB workarounds are frequently used by applications to gain elevated permissions, yet the communication channels used by these workarounds are often unprotected, allowing malicious apps to perform privilege escalation attacks via local network sockets.
+The ADB Socket Vulnerability Paradigm
+Applications using ADB workarounds typically utilize an ADB proxy running with shell or system privileges. The proxy communicates with the benign application through a network socket. Because these channels lack generic access control, malicious applications can intercept traffic or perform protocol replay attacks to gain control of the high-privilege proxy.
+Vulnerabilities in legacy kernel modules, such as xt_qtaguid, have historically exacerbated this risk by introducing use-after-free conditions that could be exploited to manipulate network socket status. Modern Android versions (Android 9+) have transitioned to eBPF-based network traffic monitoring to address these security issues and provide more flexible per-UID firewalling.
+eBPF-Based Socket Filtering and Redirection
+In a production-ready Droot-Puna environment, the orchestrator utilizes eBPF (Extended Berkeley Packet Filter) to mitigate ADB socket exploits. eBPF provides an in-kernel virtual machine that runs sandboxed programs to extend kernel functionality without requiring source code changes.
+Droot implements socket-level security using BPF_MAP_TYPE_SOCKMAP and BPF_MAP_TYPE_SOCKHASH. These map types hold references to socket descriptors and allow for the attachment of BPF "verdict" programs that determine the fate of incoming and outgoing packets.
+Mechanism of eBPF Redirection:
+1. Sockmap Entry: When a socket is created by the orchestrator for communication with the ADB bridge, it is inserted into a BPF_MAP_TYPE_SOCKMAP.
+2. Verdict Program: A verdict program (attach type BPF_SK_SKB_STREAM_VERDICT) is attached to the map. This program is triggered on packet arrival.
+3. Policy Evaluation: The program extracts the socket key (including source and destination IP and port) and checks it against the verified orchestrator context.
+4. Verdict Application: If the message is authorized, the program returns SK_PASS. If the message originates from an unapproved process attempting to hijack the ADB socket, the program redirects the packet to a blackhole or drops it using SK_DROP or the bpf_sk_redirect_map() helper.
+This architecture provides real-time, granular control over inter-process socket communication, effectively isolating the ADB bridge from unauthorized system processes.
+Stateful Isolation via Seccomp-BPF User Notifications
+While standard Seccomp filters can drop or allow syscalls, the Droot orchestrator can implement stateful inspection using SECCOMP_RET_USER_NOTIF. This mechanism allows the kernel to pass a particular system call to a userspace supervisor process for handling.
+Implementation Flow:
+1. Filter Loading: Droot installs a Seccomp filter with the ActNotify rule for critical syscalls such as connect() and mount().
+2. Listener Acquisition: The orchestrator acquisitions a listener file descriptor using the SECCOMP_FILTER_FLAG_NEW_LISTENER argument.
+3. Notification Receiving: When the containerized process attempts a restricted syscall, the kernel blocks the process and generates a struct seccomp_notif event on the listener FD.
+4. Contextual Verification: The supervisor process receives the notification via ioctl(SECCOMP_IOCTL_NOTIF_RECV). To mitigate Time-of-Check to Time-of-Use (TOCTTOU) attacks, the supervisor must read syscall arguments directly from the target process's memory (using /proc/pid/mem) before making a policy decision.
+5. Response Delivery: After validating the request, the supervisor sends a response via ioctl(SECCOMP_IOCTL_NOTIF_SEND), informing the kernel whether to permit the syscall or return an error like EACCES.
+This "supervisor-supervised" model allows Puna to support complex container management tasks while maintaining a strict kernel-level security boundary, providing a lightweight and high-assurance alternative to ptrace for production environments.
+Conclusion: The Coronation of Mobile Sovereignty
+The formalization of the Droot-Puna architecture establishes a new standard for mobile computing in hostile environments. By distinguishing the orchestrator's privileged policy enforcement from the transient, amnesiac execution of the Puna stage, the model achieves Cryptographically Enforced, Transient Isolation (CETI) that is resilient against both persistent malware and future quantum decryption threats.
+The integration of post-quantum cryptographic primitives like Kyber1024, combined with kernel-enforced syscall whitelisting and eBPF-based socket redirection, creates a hard-enforced boundary that standard mobile operating systems currently fail to provide. This architecture represents a pivotal shift in the paradigm of user ownership, demonstrating that administrative sovereignty can be reclaimed on standard hardware through rigorous algorithmic expression and kernel-level trust orchestration. Future refinements in Authenticated KEM (AKEM) and the automation of Seccomp-BPF policy generation will further harden this framework, ensuring that the creative force of developers and the privacy of high-risk users are protected from the metal up.
+
+CODE TRANSPARENCY LAB-MADRID Aug, 2025/ Apr 2026 
+Research threat analysis & reverse benchmark whatevs: Basic, handler/G.D 
